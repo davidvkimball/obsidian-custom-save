@@ -15,15 +15,37 @@ import { MySettingManager } from "@/SettingManager";
 const isMarkdownFile = (file: TAbstractFile | null) =>
 	file instanceof TFile && file.extension === "md";
 
+interface Command {
+	id: string;
+	name: string;
+	editorCallback?: Function;
+	editorCheckCallback?: Function;
+}
+
 export default class CustomSavePlugin extends Plugin {
 	settingManager: MySettingManager;
+	cachedCommands: Command[] = [];
 
 	async onload() {
-		// initialize the setting manager
+		// Initialize the setting manager
 		this.settingManager = new MySettingManager(this);
 
-		// load the setting using setting manager
+		// Load the setting using setting manager
 		await this.settingManager.loadSettings();
+
+		// Cache commands by creating a temporary Markdown leaf
+		const tempLeaf = this.app.workspace.getLeaf(true);
+		try {
+			await tempLeaf.setViewState({ type: "markdown", state: {} });
+			this.cachedCommands = this.app.commands.listCommands().map((cmd) => ({
+				id: cmd.id,
+				name: cmd.name,
+				editorCallback: cmd.editorCallback,
+				editorCheckCallback: cmd.editorCheckCallback,
+			}));
+		} finally {
+			tempLeaf.detach();
+		}
 
 		// This adds an editor command that can perform some operation on the current editor instance
 		this.addCommand({
@@ -97,7 +119,7 @@ class CustomSaveSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		// get the setting using setting manager
+		// Get the setting using setting manager
 		const setting = this.plugin.settingManager.getSettings();
 
 		let currentValue = "";
@@ -105,33 +127,27 @@ class CustomSaveSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Add command")
 			.addDropdown((dropdown) => {
+				const commands = this.plugin.cachedCommands
+					// Filter out commands already in settings and the plugin's own save command
+					.filter(
+						(command) =>
+							!setting.commandIds.includes(command.id) &&
+							command.id !== "custom-save:save"
+					)
+					.map((command) => ({
+						label: command.name + (command.editorCallback || command.editorCheckCallback ? "" : " (non-editor)"),
+						value: command.id,
+					}));
 				dropdown.addOptions(
-					this.plugin.app.commands
-						.listCommands()
-						// filter out the commands that are already in the setting
-						.filter(
-							(command) =>
-								!setting.commandIds.includes(command.id) &&
-								(command.editorCallback ||
-									command.editorCheckCallback) &&
-								command.id !== "custom-save:save"
-						)
-
-						.map((command) => {
-							return {
-								label: command.name,
-								value: command.id,
-							};
-						})
-						.reduce(
-							(acc, cur) => {
-								acc[cur.value] = cur.label;
-								return acc;
-							},
-							{
-								"": "",
-							} as Record<string, string>
-						)
+					commands.reduce(
+						(acc, cur) => {
+							acc[cur.value] = cur.label;
+							return acc;
+						},
+						{
+							"": "",
+						} as Record<string, string>
+					)
 				);
 				dropdown.onChange(async (value) => {
 					currentValue = value;
@@ -143,25 +159,9 @@ class CustomSaveSettingTab extends PluginSettingTab {
 					this.plugin.settingManager.updateSettings((setting) => {
 						setting.value.commandIds.push(currentValue);
 					});
-					// do it again
+					// Redraw the settings tab
 					containerEl.empty();
 					this.display();
-					// // create an setting item for the new command
-					// const setting = new Setting(containerEl)
-					// 	.setName(currentValue)
-					// 	.addButton((button) => {
-					// 		button.setButtonText("Remove").onClick(() => {
-					// 			this.plugin.settingManager.updateSettings(
-					// 				(setting) => {
-					// 					setting.value.commandIds =
-					// 						setting.value.commandIds.filter(
-					// 							(id) => id !== currentValue
-					// 						);
-					// 				}
-					// 			);
-					// 		});
-					// 	});
-					// this.settingItemMap.set(currentValue, setting);
 				});
 			});
 
@@ -185,12 +185,7 @@ class CustomSaveSettingTab extends PluginSettingTab {
 									(id) => id !== commandId
 								);
 						});
-
-						// get the item from the map
-						// const item = this.settingItemMap.get(commandId);
-						// item?.controlEl.remove();
-
-						// do it again
+						// Redraw the settings tab
 						containerEl.empty();
 						this.display();
 					});
